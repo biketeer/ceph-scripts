@@ -82,6 +82,16 @@ def get_partition_base(dev):
     raise Error('no parent device for partition', dev)
 
 
+def devs_sanitized(devices):
+  sanitized = []
+  for device in devices:
+    if device.startswith('ram') or device.startswith('loop') or device.startswith('md'):
+      continue
+    else:
+      sanitized.append(device)
+  return devs_sorted(sanitized)
+
+
 def discover_devices(cephdisklist):
   devices = commands.getoutput('ls /sys/block/').split()
   ssds = commands.getoutput('grep 0 /sys/block/*/queue/rotational | cut -d/ -f4 | cut -d/ -f4').split()
@@ -98,7 +108,7 @@ def discover_devices(cephdisklist):
   empty_ssds = list(set(empty) & set(ssds))
   empty_disks = list(set(empty) - set(empty_ssds))
 
-  return devs_sorted(disks), devs_sorted(ssds), devs_sorted(empty_disks), devs_sorted(empty_ssds)
+  return devs_sanitized(disks), devs_sanitized(ssds), devs_sanitized(empty_disks), devs_sanitized(empty_ssds)
 
 
 def get_empty_devices(cephdisklist):
@@ -198,14 +208,18 @@ def detect_current_layout(cephdisklist):
   for disk in cephdisklist:
     path = get_dev_name(disk['path'])
     try:
-      for part in disk['partitions']:
-        if part['type'] == 'data':
+      partitions = disk['partitions']
+    except KeyError:
+      continue # probably not an osd
+    for part in partitions:
+      if part['type'] == 'data':
+        try:
           journal_dev = get_dev_name(part['journal_dev'])
           if path == get_partition_base('/dev/'+journal_dev):
             journal_dev = ''
-          layout.append((path, journal_dev),)
-    except KeyError:
-      pass # probably not an osd
+        except KeyError: # usually a local journal file
+          journal_dev = ''
+        layout.append((path, journal_dev),)
 
   return layout
 
@@ -233,8 +247,8 @@ parser = argparse.ArgumentParser(description='Discover ceph OSDs which have not 
 parser.add_argument('--journal-mode', dest='mode', default='autodiscover',
                     choices=['autodiscover', 'colocated', 'ssd'],
                     help='Set the OSD/Journal layout mode (default: %(default)s)')
-parser.add_argument('--format', dest='format', default='json',
-                    choices=['json','commands'],
+parser.add_argument('--format', dest='format', default='commands',
+                    choices=['json','commands', 'execute'],
                     help='Set the output format (default: %(default)s)')
 
 args = parser.parse_args()
@@ -272,6 +286,15 @@ if args.format == 'json':
 elif args.format == 'commands':
   for work in prepare_work:
     print work
+elif args.format == 'execute':
+  for cmd in prepare_work:
+    print 'Running command:', cmd
+    print
+    status, output = commands.getstatusoutput(cmd)
+    print output
+    print
+    print 'Exit status:', status
+    print
 else:
   raise Error('Unknown output format %(args.format)')
 
